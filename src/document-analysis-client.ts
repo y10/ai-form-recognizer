@@ -69,13 +69,41 @@ export class DocumentAnalysisClient {
       throw new Error("Missing apim-request-id header");
     }
 
-    return {
-      id,
-      model,
-      status: "notStarted",
-      createdOn: new Date(),
-      lastUpdatedOn: new Date(),
-    };
+    if (response.ok) {
+      return {
+        id,
+        model,
+        status: "notStarted",
+        createdOn: new Date(),
+        lastUpdatedOn: new Date(),
+      };
+    }
+
+    const content = await response.text();
+
+    try {
+      const result = JSON.parse(content);
+      return {
+        id,
+        model,
+        status: "failed",
+        createdOn: new Date(),
+        lastUpdatedOn: new Date(),
+        ...result,
+      };
+    } catch {
+      return {
+        id,
+        model,
+        status: "failed",
+        createdOn: new Date(),
+        lastUpdatedOn: new Date(),
+        error: {
+          code: `${response.status}`,
+          message: `${response.statusText}. ${content}`,
+        },
+      };
+    }
   }
 
   public async analyzeDocument(
