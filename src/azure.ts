@@ -1,4 +1,9 @@
-import { IAzureCredentials, AzureCredentialType } from "./interfaces/azure.ts";
+export type AzureCredentialType = "Default" | "Key";
+
+export interface IAzureCredentials {
+  type: AzureCredentialType;
+  toString(): string;
+}
 
 export class AzureKeyCredential implements IAzureCredentials {
   constructor(private key: string) { }

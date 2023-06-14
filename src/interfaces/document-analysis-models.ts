@@ -53,7 +53,7 @@ export interface InnerError {
 /** Status and result of the analyze operation. */
 export interface AnalyzeResultOperation {
   /** Operation status. */
-  status: AnalyzeResultOperationStatus;
+  status: OperationStatus;
   /** Date and time (UTC) when the analyze operation was submitted. */
   createdOn: Date;
   /** Date and time (UTC) when the status was last updated. */
@@ -824,12 +824,6 @@ export type ContentType =
   | "image/jpeg"
   | "image/png"
   | "image/tiff";
-/** Defines values for AnalyzeResultOperationStatus. */
-export type AnalyzeResultOperationStatus =
-  | "notStarted"
-  | "running"
-  | "failed"
-  | "succeeded";
 /** Defines values for OperationStatus. */
 export type OperationStatus =
   | "notStarted"

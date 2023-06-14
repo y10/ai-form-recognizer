@@ -1,13 +1,16 @@
-import { IAzureCredentials } from "./interfaces/azure.ts";
+import { IAzureCredentials } from "./azure.ts";
 import {
   AnalyseInput,
   AnalyzeResult,
-  IAsyncAnalyzeResult,
+  IAsyncAwaiter,
   AnalyzeOperationResult,
   AnalyseOptions,
   KnownApiVersion,
   PrebuilModel,
+  AnalyseError,
 } from "./interfaces/document-analysis.ts";
+import { AsyncAwaiter } from "./document-analysis-utils.ts";
+
 
 export class DocumentAnalysisClient {
   options: {
@@ -31,79 +34,98 @@ export class DocumentAnalysisClient {
 
   public async beginAnalyzeDocument(
     input: AnalyseInput
-  ): Promise<AnalyzeOperationResult<AnalyzeResult>> {
-    return await this.beginAnalyze(PrebuilModel.document, input);
+  ): Promise<IAsyncAwaiter<AnalyzeOperationResult<AnalyzeResult>>> {
+    return await this.beginAnalyze<AnalyzeResult>(PrebuilModel.document, input);
   }
 
   public async beginAnalyzeDocumentFromUrl(
     formUrl: string
-  ): Promise<AnalyzeOperationResult<AnalyzeResult>> {
-    return await this.beginAnalyze(
+  ): Promise<IAsyncAwaiter<AnalyzeOperationResult<AnalyzeResult>>> {
+    return await this.beginAnalyze<AnalyzeResult>(
       PrebuilModel.document,
       `{'urlSource': '${formUrl}'}`
     );
   }
 
   public async beginAnalyze<TResult>(
+    /**
+     * @model form recognition model name
+     */
     model: string,
-    input: AnalyseInput
-  ): Promise<AnalyzeOperationResult<TResult>> {
-    const contentType =
-      typeof input === "string"
-        ? "application/json"
-        : "application/octet-stream";
-    const response = await fetch(
-      `${this.endpoint}formrecognizer/documentModels/${model}:analyze?api-version=${this.options.version}`,
-      {
-        method: "POST",
-        headers: [
-          ["Content-Type", contentType],
-          ["Ocp-Apim-Subscription-Key", this.credentials.toString()],
-        ],
-        body: input,
+    /**
+     * @input a document to analize
+     */
+    input: AnalyseInput,
+    /**
+     * @options set timeout and abort signal
+     */
+    options?: { timeout?: number; abort?: AbortSignal }
+  ): Promise<IAsyncAwaiter<AnalyzeOperationResult<TResult>>> {
+    let progress = await this.postDocument<AnalyzeOperationResult<TResult>>(input, model);
+    const id = progress.id;
+    const terminator = new AbortController();
+    const abort = options?.abort;
+    const signal = terminator.signal;
+    const timeout = options?.timeout || 1000;
+    const promise = new Promise<AnalyzeOperationResult<TResult>>(
+      (ok, reject) => {
+        setTimeout(async () => {
+          let attempt = 0;
+          while (true) {
+            if (signal.aborted) {
+              reject("Document analysis operation has been aborted.");
+              break;
+            }
+
+            if (abort && abort.aborted) {
+              terminator.abort();
+              continue;
+            }
+
+            progress = await this.getResults<AnalyzeOperationResult<TResult>>(model, id);
+
+            if (progress.error) {
+              reject(new AnalyseError(progress.error));
+              break;
+            }
+            if (progress.analyzeResult) {
+              ok(progress);
+              break;
+            }
+
+            await new Promise((done) =>
+              setTimeout(done, Math.pow(2, ++attempt) * timeout)
+            );
+          }
+        }, timeout);
       }
     );
+    return new AsyncAwaiter({
+      wait: async (abort?: AbortSignal) => {
+        if (abort) {
+          return await Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+              abort.addEventListener("abort", () => {
+                terminator.abort();
+                reject(Error("Wait aborted."));
+              });
+            }),
+          ]);
+        }
 
-    const id = response.headers.get("apim-request-id");
-    if (!id) {
-      throw new Error("Missing apim-request-id header");
-    }
-
-    if (response.ok) {
-      return {
-        id,
-        model,
-        status: "notStarted",
-        createdOn: new Date(),
-        lastUpdatedOn: new Date(),
-      };
-    }
-
-    const content = await response.text();
-
-    try {
-      const result = JSON.parse(content);
-      return {
-        id,
-        model,
-        status: "failed",
-        createdOn: new Date(),
-        lastUpdatedOn: new Date(),
-        ...result,
-      };
-    } catch {
-      return {
-        id,
-        model,
-        status: "failed",
-        createdOn: new Date(),
-        lastUpdatedOn: new Date(),
-        error: {
-          code: `${response.status}`,
-          message: `${response.statusText}. ${content}`,
-        },
-      };
-    }
+        return await promise;
+      },
+      abort() {
+        terminator.abort();
+      },
+      get status() {
+        return signal.aborted ? "canceled" : progress.status || "notStarted";
+      },
+      get progress() {
+        return progress;
+      },
+    });
   }
 
   public async analyzeDocument(
@@ -133,28 +155,64 @@ export class DocumentAnalysisClient {
     input: AnalyseInput,
     options?: AnalyseOptions
   ) {
-    const awaiter = await this.awaitResults<TResult>(model, input);
+    const awaiter = await this.beginAnalyze<TResult>(model, input);
     const callbackUrl = options?.callbackUrl;
     if (callbackUrl) {
-      setTimeout(async () => {
-        try {
-          const results = await awaiter.wait(options?.abort);
-          await this.sendResults(callbackUrl, results);
-        } catch (error) {
-          await this.sendResults(callbackUrl, error);
-        }
-      }, 1000);
+      let error;
+      try {
+        await awaiter.wait();
+      } catch (e) {
+        error = e;
+      }
 
-      return await awaiter.progress();
+      if (error) {
+        await this.sendResults(callbackUrl, {
+          id: awaiter.progress.id,
+          error,
+        });
+      } else {
+        await this.sendResults(callbackUrl, awaiter.progress);
+      }
+
+      return awaiter.progress;
     } else {
-      return await awaiter.wait(options?.abort);
+      return await awaiter.wait();
     }
   }
 
-  public async retrieveResults<TResult>(
+  public async postDocument<TResult>(input: AnalyseInput, model: string): Promise<TResult> {
+    const contentType =
+      typeof input === "string"
+        ? "application/json"
+        : "application/octet-stream";
+    const response = await fetch(
+      `${this.endpoint}formrecognizer/documentModels/${model}:analyze?api-version=${this.options.version}`,
+      {
+        method: "POST",
+        headers: [
+          ["Content-Type", contentType],
+          ["Ocp-Apim-Subscription-Key", this.credentials.toString()],
+        ],
+        body: input,
+      }
+    );
+
+    const id = response.headers.get("apim-request-id");
+    if (!id) throw new Error("Missing apim-request-id header");
+
+    return <TResult>{
+      id,
+      model,
+      status: "notStarted",
+      createdOn: new Date(),
+      lastUpdatedOn: new Date(),
+    };
+  }
+
+  public async getResults<TResult extends { id: string }>(
     model: string,
     requestId: string
-  ): Promise<AnalyzeOperationResult<TResult>> {
+  ): Promise<TResult> {
     const response = await fetch(
       `${this.endpoint}formrecognizer/documentModels/${model}/analyzeResults/${requestId}?api-version=${this.options.version}`,
       {
@@ -167,64 +225,9 @@ export class DocumentAnalysisClient {
     return { ...result, model, id: requestId };
   }
 
-  public async awaitResults<TResult>(
-    model: string,
-    input: AnalyseInput
-  ): Promise<IAsyncAnalyzeResult<TResult>> {
-    let progress = await this.beginAnalyze<TResult>(model, input);
-    return <IAsyncAnalyzeResult<TResult>>{
-      wait: (abort) => {
-        if (progress.id) {
-          return new Promise((ok, reject) => {
-            setTimeout(async () => {
-              while (true) {
-                if (abort?.aborted) {
-                  reject(
-                    new Error("Document analysis operation has been aborted.")
-                  );
-                  break;
-                }
-                progress = await this.retrieveResults<TResult>(
-                  progress.model,
-                  progress.id
-                );
-                if (progress?.error) {
-                  reject(progress);
-                  break;
-                }
-                if (progress?.analyzeResult) {
-                  ok(progress);
-                  break;
-                }
-                await new Promise((done) => setTimeout(done, 1000));
-              }
-            }, 1000);
-          });
-        }
-      },
-      error() {
-        return progress.error;
-      },
-      result() {
-        return progress.analyzeResult;
-      },
-      progress: async () => {
-        if (progress.id) {
-          if (!progress.analyzeResult || !progress.error) {
-            progress = await this.retrieveResults<TResult>(
-              progress.model,
-              progress.id
-            );
-          }
-        }
-        return progress;
-      },
-    };
-  }
-
-  private async sendResults<TResult>(
+  private async sendResults<TResult extends { id: string }>(
     uri: string,
-    result: AnalyzeOperationResult<TResult>
+    result: TResult
   ) {
     await fetch(uri, {
       method: "POST",

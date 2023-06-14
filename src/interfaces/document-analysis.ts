@@ -1,33 +1,32 @@
 import {
-  AnalyzeResult,
-  AnalyzeResultOperationStatus,
   ErrorModel,
-  KnownApiVersion,
+  OperationStatus,
 } from "./document-analysis-models.ts";
 
-export interface IAsyncAnalyzeResult<TResult> {
+export * from "./document-analysis-models.ts";
+
+/**
+ * Async operation awaiter. Once wated, will pull the results until completed.
+ */
+export interface IAsyncAwaiter<TResult extends { id: string }> {
   /**
-   * Returns a promise that will resolve once the underlying operation is completed.
+   * Starts pulling the result into the progress property and returns the result once completed
    */
-  wait(abort?: AbortSignal): Promise<AnalyzeOperationResult<TResult>>;
+  wait(abort?: AbortSignal): Promise<TResult>;
+  /**
+   * Aborts the operation
+   */
+  abort(): void;
+
+   /**
+   * Current progress status
+   */
+  get status(): OperationStatus;
 
   /**
-   * Pools the current progress
+   *  gets the current progress
    */
-  progress(): Promise<AnalyzeOperationResult<TResult>>;
-
-  /**
-   * Returns the result value of the operation,
-   * regardless of the state of the poller.
-   * It can return undefined or an incomplete form of the final TResult value
-   * depending on the implementation.
-   */
-  result(): Promise<TResult | undefined>;
-
-  /**
-   * Returns the error of the operation, if any.
-   */
-  error(): Error | ErrorModel | undefined;
+  get progress(): TResult;
 }
 
 /** Status and result of the analyze operation. */
@@ -37,7 +36,7 @@ export interface AnalyzeOperationResult<TResult> {
   /** Model name. */
   model: string;
   /** Operation status. */
-  status: AnalyzeResultOperationStatus;
+  status: OperationStatus;
   /** Date and time (UTC) when the analyze operation was submitted. */
   createdOn: Date;
   /** Date and time (UTC) when the status was last updated. */
@@ -50,6 +49,7 @@ export interface AnalyzeOperationResult<TResult> {
 
 export interface AnalyseOptions {
   callbackUrl?: string,
+  timeout?: number,
   abort?: AbortSignal
 }
 
@@ -67,5 +67,11 @@ export enum PrebuilModel {
   document = "prebuilt-document",
 }
 
-export { KnownApiVersion };
-export type { AnalyzeResult };
+export class AnalyseError extends Error{
+  constructor(error: ErrorModel)  
+  constructor(arg?: string | ErrorModel, error?: ErrorModel)  {
+    super(
+      typeof(arg) === "string" ? arg : error?.message
+    )
+  }
+}
