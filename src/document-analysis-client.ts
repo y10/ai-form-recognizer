@@ -186,7 +186,7 @@ export class DocumentAnalysisClient {
         ? "application/json"
         : "application/octet-stream";
     const response = await fetch(
-      `${this.endpoint}documentintelligence/documentModels/${model}:analyze?api-version=${this.options.version}`,
+      `${this.endpoint}formrecognizer/documentModels/${model}:analyze?api-version=${this.options.version}`,
       {
         method: "POST",
         headers: [
@@ -214,7 +214,7 @@ export class DocumentAnalysisClient {
     requestId: string
   ): Promise<TResult> {
     const response = await fetch(
-      `${this.endpoint}documentintelligence/documentModels/${model}/analyzeResults/${requestId}?api-version=${this.options.version}`,
+      `${this.endpoint}formrecognizer/documentModels/${model}/analyzeResults/${requestId}?api-version=${this.options.version}`,
       {
         method: "GET",
         headers: [["Ocp-Apim-Subscription-Key", this.credentials.toString()]],
